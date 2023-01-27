@@ -11,3 +11,4 @@ buildscript {
 rootProject.name = "java-2-2022"
 
 include("common", "client", "server")
+include("runner")

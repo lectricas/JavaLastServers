@@ -3,55 +3,98 @@ package ru.itmo.java.server;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.util.concurrent.ConcurrentHashMap;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Logger;
+
 import ru.itmo.java.message.Constant;
-import ru.itmo.java.message.simple.Person;
-import ru.itmo.java.message.simple.Request;
-import ru.itmo.java.message.simple.Response;
+import ru.itmo.java.message.Loger;
+import ru.itmo.java.message.Timer;
+import ru.itmo.java.message.simple.*;
 
 public class SimpleServer {
-    private final ExecutorService pool = Executors.newCachedThreadPool();
-    private final ConcurrentHashMap<Integer, Person> map = new ConcurrentHashMap<>();
+    private final ExecutorService readers;
+    private final ExecutorService writers;
+    private final ExecutorService workers;
 
-    public static void main(String[] args) throws IOException {
-        new SimpleServer().run();
+    private final int numberOfRequestsPerClient;
+    private final int numberOfClients;
+
+    private final int numberOfRequestTotal;
+
+    final AtomicInteger counter = new AtomicInteger(0);
+
+    public SimpleServer(int numberOfClients, int numberOfRequestsPerClient) {
+        this.numberOfRequestsPerClient = numberOfRequestsPerClient;
+        this.numberOfClients = numberOfClients;
+        numberOfRequestTotal = numberOfClients * numberOfRequestsPerClient;
+        readers = Executors.newFixedThreadPool(numberOfClients);
+        writers = Executors.newFixedThreadPool(numberOfClients);
+        workers = Executors.newFixedThreadPool(10);
     }
 
-    public void run() throws IOException {
-        try (ServerSocket serverSocket = new ServerSocket(Constant.PORT)) {
-            while (true) {
-                var socket = serverSocket.accept();
-                System.out.println("Client accepted");
-                pool.submit(new Worker(socket));
-            }
+    public void run() {
+        ServerSocket serverSocket;
+        try {
+            serverSocket = new ServerSocket(Constant.PORT);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
         }
-    }
-
-    private class Worker implements Runnable {
-        private final Socket socket;
-
-        public Worker(Socket socket) {
-            this.socket = socket;
+        for (int i = 0; i < numberOfClients; i++) {
+            final Socket socket;
+            try {
+                socket = serverSocket.accept();
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+            readers.submit(() -> {
+                for (int j = 0; j < numberOfRequestsPerClient; j++) {
+                    final MyArray request;
+                    try {
+                        request = MyArray.parseDelimitedFrom(socket.getInputStream());
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                        throw new IllegalStateException(e);
+                    }
+                    final Instant beforeRequest = Instant.now();
+                    workers.submit(() -> {
+                        final List<Integer> arr = new ArrayList<>(request.getArrayList());
+                        Instant beforeSort = Instant.now();
+                        Sort.bubbleSort(arr);
+                        Instant afterSort = Instant.now();
+                        Timer.sortingTimer.offer(Duration.between(beforeSort, afterSort).toMillis());
+                        var response = MyArray.newBuilder().addAllArray(arr).build();
+                        writers.submit(() -> {
+                            try {
+                                final Instant afterRequest = Instant.now();
+                                Timer.serverResponseTimer.add(Duration.between(beforeRequest, afterRequest).toMillis());
+                                response.writeDelimitedTo(socket.getOutputStream());
+                                counter.getAndIncrement();
+                            } catch (IOException e) {
+                                e.printStackTrace();
+                            }
+                        });
+                    });
+                }
+            });
+        }
+        while (counter.get() < numberOfRequestTotal) {
+            //wait
         }
 
-        @Override
-        public void run() {
-            try (Socket socket = this.socket) {
-                var request = Request.parseDelimitedFrom(socket.getInputStream());
-                var person = map.computeIfAbsent(
-                    request.getId(),
-                    (key) -> Person.newBuilder()
-                        .setName("John Doe")
-                        .setEmail("john@qqq.com")
-                        .setId(key)
-                        .build()
-                    );
-                Response.newBuilder().setPerson(person).build().writeDelimitedTo(socket.getOutputStream());
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+        try {
+            writers.shutdown();
+            workers.shutdown();
+            serverSocket.close();
+            readers.shutdown();
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 }

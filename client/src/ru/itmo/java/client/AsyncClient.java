@@ -1,16 +1,16 @@
 package ru.itmo.java.client;
 
 import ru.itmo.java.message.Constant;
-import ru.itmo.java.message.Loger;
 import ru.itmo.java.message.simple.MyArray;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
-public class SimpleClient implements Client {
+public class AsyncClient implements Client {
 
     public void run(int numberOfArrayElements, int numberOfRequestsPerClient) throws IOException {
         Socket socket = new Socket("localhost", Constant.PORT);
@@ -23,9 +23,13 @@ public class SimpleClient implements Client {
             var request = MyArray.newBuilder()
                     .addAllArray(arr)
                     .build();
-            request.writeDelimitedTo(socket.getOutputStream());
-            var response = MyArray.parseDelimitedFrom(socket.getInputStream());
+
+            int size = request.getSerializedSize();
+
+            socket.getOutputStream().write(ByteBuffer.allocate(4).putInt(size).array());
+            socket.getOutputStream().write(request.toByteArray());
+            byte[] bytes = socket.getInputStream().readNBytes(size);
+            MyArray arr1 = MyArray.parseFrom(bytes);
         }
-        socket.close();
     }
 }
